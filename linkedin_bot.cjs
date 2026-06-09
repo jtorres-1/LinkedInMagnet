@@ -19,14 +19,11 @@ const DEVHIRE_QUERIES = [
   "need a website built",
   "hiring a developer",
   "need a freelance developer",
-  "looking to hire a developer",
   "need someone to build",
-  "need a full stack developer",
   "need an app built",
-  "need a scraper built",
-  "need AI integration",
   "need a bot built",
   "need MVP built",
+  "need AI integration",
 ];
 
 const MAPZAP_QUERIES = [
@@ -35,24 +32,20 @@ const MAPZAP_QUERIES = [
   "need more customers",
   "need business leads",
   "how to find clients",
-  "lead generation problems",
   "need local business leads",
   "cold outreach help",
   "need a lead list",
-  "finding new clients",
-  "need more sales",
-  "prospecting help",
-  "need prospects",
   "client acquisition",
   "building a pipeline",
+  "need more sales",
+  "prospecting help",
 ];
 
 const DEVHIRE_COMMENTS = [
   `Python dev in LA available this week. built live production tools including a Google Maps SaaS and automation pipelines. 48hr delivery, flat fee. DM me a scope`,
   `available for freelance work right now. i build websites, scrapers, automation bots, and AI integrations. flat fee, 48 hour delivery. DM me what you need built`,
-  `Python developer in LA here. shipped a live Google Maps lead scraper SaaS, cold email pipelines, and automation bots in production. 48hr turnaround, flat fee. DM me a scope`,
+  `Python developer in LA here. shipped a live Google Maps lead scraper SaaS, cold email pipelines, and automation bots in production. 48hr turnaround, flat fee. DM me`,
   `dev in LA available immediately. websites, scrapers, bots, AI integrations. flat fee only, 48 hour delivery. DM me what you need`,
-  `Python and Node.js developer available this week. live production projects including a SaaS with Stripe payments and automation bots. flat fee, fast turnaround. DM me`,
 ];
 
 const MAPZAP_COMMENTS = [
@@ -60,7 +53,6 @@ const MAPZAP_COMMENTS = [
   `this might solve it — mapzap.org scrapes 100 local businesses from Google Maps in 60 seconds. name, phone, address, website as a CSV. $49/month unlimited, free preview at mapzap.org`,
   `built a tool for exactly this — mapzap.org pulls 100 local business leads in 60 seconds. type a niche and city, get a CSV instantly. $49/month unlimited searches`,
   `mapzap.org might help here. pulls 100 local business leads from Google Maps in 60 seconds as a downloadable CSV. $49/month unlimited, free preview no card needed`,
-  `built mapzap.org for this exact problem. type any business type and city, get 100 leads with names, phones, addresses, websites as a CSV in 60 seconds. $49/month unlimited`,
 ];
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -86,7 +78,7 @@ async function loadSession(page) {
   if (!fs.existsSync(SESSION_PATH)) throw new Error("No session. Run linkedin_login.cjs first.");
   const cookies = JSON.parse(fs.readFileSync(SESSION_PATH));
   await page.setCookie(...cookies);
-  await page.goto("https://www.linkedin.com/feed/", { waitUntil: "networkidle2", timeout: 30000 });
+  await page.goto("https://www.linkedin.com/feed/", { waitUntil: "domcontentloaded", timeout: 60000 });
   await sleep(rand(3000, 5000));
   if (page.url().includes("login") || page.url().includes("authwall")) {
     throw new Error("Session expired. Run linkedin_login.cjs again.");
@@ -94,119 +86,152 @@ async function loadSession(page) {
   log("INFO", "Session loaded.");
 }
 
-async function searchPosts(page, query) {
-  log("SEARCH", `Searching: "${query}"`);
-  const url = `https://www.linkedin.com/search/results/content/?keywords=${encodeURIComponent(query)}&sortBy=date_posted`;
-  await page.goto(url, { waitUntil: "networkidle2", timeout: 30000 });
-  await sleep(rand(3000, 5000));
+async function searchAndComment(page, query, type, commented) {
+  log("SEARCH", `Searching: "${query}" [${type}]`);
 
-  for (let i = 0; i < 3; i++) {
-    await page.evaluate(() => window.scrollBy(0, 600));
-    await sleep(rand(1500, 2500));
-  }
+  try {
+    // Navigate to LinkedIn search for posts
+    await page.goto(`https://www.linkedin.com/search/results/content/?keywords=${encodeURIComponent(query)}&sortBy=date_posted`, {
+      waitUntil: "domcontentloaded",
+      timeout: 60000
+    });
+    await sleep(rand(4000, 6000));
 
-  const posts = await page.evaluate(() => {
-    const results = [];
-    const postEls = Array.from(document.querySelectorAll('.feed-shared-update-v2, [data-urn*="activity"]'));
-
-    for (const post of postEls) {
-      // Get post text
-      const textEl = post.querySelector('.feed-shared-text, .attributed-text-segment-list__content, [class*="commentary"]');
-      if (!textEl) continue;
-      const text = textEl.innerText?.toLowerCase() || '';
-      if (!text || text.length < 20) continue;
-
-      // Get post ID from data-urn
-      const urn = post.getAttribute('data-urn') || post.closest('[data-urn]')?.getAttribute('data-urn') || '';
-      const postId = urn.replace(/[^0-9]/g, '') || Math.random().toString(36).substr(2, 9);
-
-      // Get author
-      const authorEl = post.querySelector('.feed-shared-actor__name, .update-components-actor__name');
-      const author = authorEl?.innerText?.trim() || 'unknown';
-
-      // Find comment button
-      const commentBtn = post.querySelector('[aria-label*="comment"], [data-control-name="comment"]');
-
-      if (!postId) continue;
-
-      results.push({ postId, author, text: text.substring(0, 200), hasCommentBtn: !!commentBtn });
+    // Scroll to load posts
+    for (let i = 0; i < 4; i++) {
+      await page.evaluate(() => window.scrollBy(0, 500));
+      await sleep(rand(1500, 2500));
     }
 
-    return results;
-  });
+    // Get all post containers
+    const postCount = await page.evaluate(() => {
+      return document.querySelectorAll('[data-urn*="activity"], .search-results__list > li').length;
+    });
+    log("SEARCH", `Found ${postCount} posts for "${query}"`);
 
-  log("SEARCH", `Found ${posts.length} posts for "${query}"`);
-  return posts;
+    // Process each post
+    const posts = await page.evaluate(() => {
+      const results = [];
+      const containers = Array.from(document.querySelectorAll('[data-urn*="activity"]'));
+      for (const container of containers) {
+        const urn = container.getAttribute('data-urn') || '';
+        const postId = urn.replace(/[^0-9]/g, '').slice(-10);
+        if (!postId) continue;
+
+        // Get text
+        const textEl = container.querySelector(
+          '.feed-shared-text span[dir="ltr"], .attributed-text-segment-list__content, .feed-shared-inline-show-more-text'
+        );
+        const text = textEl?.innerText?.toLowerCase() || '';
+        if (!text || text.length < 20) continue;
+
+        // Get author
+        const authorEl = container.querySelector('.feed-shared-actor__name, .update-components-actor__name span[aria-hidden="true"]');
+        const author = authorEl?.innerText?.trim() || 'unknown';
+
+        // Check for comment button
+        const commentBtn = container.querySelector('[aria-label*="omment"], [data-control-name*="comment"]');
+
+        results.push({ postId, author, text: text.substring(0, 150), hasBtn: !!commentBtn });
+      }
+      return results;
+    });
+
+    return posts;
+  } catch (err) {
+    log("ERROR", `Search failed for "${query}": ${err.message}`);
+    return [];
+  }
 }
 
-async function commentOnPost(page, post, commentText) {
+async function commentOnPost(page, query, post, commentText) {
   try {
-    // Navigate to post directly if we have an ID
-    await page.goto(`https://www.linkedin.com/feed/`, { waitUntil: "networkidle2", timeout: 30000 });
-    await sleep(rand(2000, 3000));
-
-    // Search again to find the post
-    const url = `https://www.linkedin.com/search/results/content/?keywords=${encodeURIComponent(post.searchQuery)}&sortBy=date_posted`;
-    await page.goto(url, { waitUntil: "networkidle2", timeout: 30000 });
+    // Re-search to find the post fresh
+    await page.goto(`https://www.linkedin.com/search/results/content/?keywords=${encodeURIComponent(query)}&sortBy=date_posted`, {
+      waitUntil: "domcontentloaded",
+      timeout: 60000
+    });
     await sleep(rand(3000, 5000));
 
+    // Scroll to load
+    for (let i = 0; i < 3; i++) {
+      await page.evaluate(() => window.scrollBy(0, 500));
+      await sleep(rand(1000, 2000));
+    }
+
     // Find and click comment button on matching post
-    const clicked = await page.evaluate((postId, authorName) => {
-      const postEls = Array.from(document.querySelectorAll('.feed-shared-update-v2, [data-urn*="activity"]'));
-      for (const post of postEls) {
-        const urn = post.getAttribute('data-urn') || post.closest('[data-urn]')?.getAttribute('data-urn') || '';
-        const id = urn.replace(/[^0-9]/g, '');
-        const author = post.querySelector('.feed-shared-actor__name, .update-components-actor__name')?.innerText?.trim() || '';
-        if (id === postId || author === authorName) {
-          const commentBtn = post.querySelector('[aria-label*="comment"], [aria-label*="Comment"]');
-          if (commentBtn) { commentBtn.click(); return true; }
+    const commentBtnHandle = await page.evaluateHandle((postId, author) => {
+      const containers = Array.from(document.querySelectorAll('[data-urn*="activity"]'));
+      for (const container of containers) {
+        const urn = container.getAttribute('data-urn') || '';
+        const id = urn.replace(/[^0-9]/g, '').slice(-10);
+        const authorEl = container.querySelector('.feed-shared-actor__name, .update-components-actor__name span[aria-hidden="true"]');
+        const containerAuthor = authorEl?.innerText?.trim() || '';
+
+        if (id === postId || containerAuthor === author) {
+          // Find comment button
+          const btns = Array.from(container.querySelectorAll('button'));
+          const commentBtn = btns.find(b =>
+            b.getAttribute('aria-label')?.toLowerCase().includes('comment') ||
+            b.innerText?.toLowerCase().trim() === 'comment'
+          );
+          if (commentBtn) return commentBtn;
         }
       }
-      return false;
+      return null;
     }, post.postId, post.author);
 
-    if (!clicked) {
-      log("SKIP", `Could not find comment button for post by ${post.author}`);
+    const commentBtn = commentBtnHandle.asElement();
+    if (!commentBtn) {
+      log("SKIP", `No comment button found for post by ${post.author}`);
       return "no_btn";
     }
 
+    await commentBtn.click();
     await sleep(rand(2000, 3000));
 
-    // Type comment
-    const editor = await page.evaluateHandle(() => {
-      return document.querySelector('.ql-editor, [contenteditable="true"][role="textbox"], [data-placeholder*="comment"]') || null;
+    // Find the comment text area that appeared
+    const editorHandle = await page.evaluateHandle(() => {
+      return document.querySelector('.ql-editor[contenteditable="true"]') ||
+             document.querySelector('[contenteditable="true"][data-placeholder*="omment"]') ||
+             document.querySelector('[contenteditable="true"][role="textbox"]') ||
+             null;
     });
 
-    const editorEl = editor.asElement();
-    if (!editorEl) {
-      log("SKIP", `No comment editor found`);
+    const editor = editorHandle.asElement();
+    if (!editor) {
+      log("SKIP", `No comment editor found for post by ${post.author}`);
       return "no_editor";
     }
 
-    await editorEl.click();
-    await sleep(rand(1000, 2000));
+    await editor.click();
+    await sleep(rand(1000, 1500));
     await page.keyboard.type(commentText, { delay: rand(30, 60) });
     await sleep(rand(2000, 3000));
 
-    // Submit comment
+    // Click post/submit button
     const submitted = await page.evaluate(() => {
       const btns = Array.from(document.querySelectorAll('button'));
       const submitBtn = btns.find(b =>
         b.innerText?.trim().toLowerCase() === 'post' ||
         b.getAttribute('aria-label')?.toLowerCase().includes('post comment') ||
-        b.className?.includes('comment-post')
+        (b.className?.includes('comment') && b.innerText?.trim().toLowerCase() === 'post')
       );
-      if (submitBtn) { submitBtn.click(); return true; }
+      if (submitBtn && !submitBtn.disabled) { submitBtn.click(); return true; }
       return false;
     });
 
     if (!submitted) {
-      log("ERROR", `Could not submit comment for post by ${post.author}`);
-      return "no_submit";
+      // Try pressing Enter as fallback
+      await page.keyboard.down('Control');
+      await page.keyboard.press('Enter');
+      await page.keyboard.up('Control');
+      await sleep(rand(2000, 3000));
+      log("INFO", `Used Ctrl+Enter fallback for ${post.author}`);
     }
 
     await sleep(rand(3000, 5000));
-    log("COMMENTED", `${post.author} — "${post.text.substring(0, 60)}..."`);
+    log("COMMENTED", `@${post.author} — "${post.text.substring(0, 60)}..."`);
     return "commented";
 
   } catch (err) {
@@ -236,7 +261,7 @@ async function runCycle() {
       ...MAPZAP_QUERIES.map(q => ({ query: q, type: "MAPZAP" })),
     ];
 
-    // Shuffle to vary which queries we hit each cycle
+    // Shuffle queries each cycle
     allQueries.sort(() => Math.random() - 0.5);
 
     for (const { query, type } of allQueries) {
@@ -245,7 +270,7 @@ async function runCycle() {
         break;
       }
 
-      const posts = await searchPosts(page, query);
+      const posts = await searchAndComment(page, query, type, commented);
 
       for (const post of posts) {
         if (commentsThisCycle >= MAX_COMMENTS_PER_CYCLE) break;
@@ -254,9 +279,8 @@ async function runCycle() {
           continue;
         }
 
-        post.searchQuery = query;
         const commentText = type === "DEVHIRE" ? pick(DEVHIRE_COMMENTS) : pick(MAPZAP_COMMENTS);
-        const result = await commentOnPost(page, post, commentText);
+        const result = await commentOnPost(page, query, post, commentText);
 
         if (result === "commented") {
           commented[post.postId] = new Date().toISOString();
